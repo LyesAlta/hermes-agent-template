@@ -471,13 +471,24 @@ class Gateway:
         await self.start()
 
     async def _drain(self):
-        assert self.proc and self.proc.stdout
-        async for raw in self.proc.stdout:
-            line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
-            self.logs.append(line)
-        if self.state == "running":
-            self.state = "error"
-            self.logs.append(f"[error] Gateway exited (code {self.proc.returncode})")
+        try:
+            assert self.proc and self.proc.stdout
+            async for raw in self.proc.stdout:
+                line = ANSI_ESCAPE.sub("", raw.decode(errors="replace").rstrip())
+                self.logs.append(line)
+        except Exception as e:
+            self.logs.append(f"[error] Drain exception: {e}")
+        finally:
+            if self.state in ("running", "starting"):
+                self.state = "error"
+                code = getattr(self.proc, "returncode", "unknown")
+                self.logs.append(f"[error] Gateway exited (code {code})")
+                # Watchdog: auto-restart with backoff
+                self.restarts += 1
+                delay = min(30, 5 * self.restarts)
+                self.logs.append(f"[watchdog] Restarting in {delay}s (attempt {self.restarts})...")
+                await asyncio.sleep(delay)
+                await self.start()
 
     def status(self) -> dict:
         uptime = int(time.time() - self.started_at) if self.started_at and self.state == "running" else None
